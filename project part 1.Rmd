@@ -1,0 +1,393 @@
+---
+title: "Project Part 1"
+output: html_document
+date: "2026-11-20"
+---
+Part 1: explore, preprocess and quality-control the data
+
+STEP 1: load the dataset
+
+# Load the data
+```{r}
+counts <- read.csv("C:/Users/4inez/OneDrive - UGent/1e Master/LARGE/Project/GSE80655_counts.csv")
+metadata <- read.csv("C:/Users/4inez/OneDrive - UGent/1e Master/LARGE/Project/GSE80655_metadata.csv")
+```
+
+STEP 2: describe the dataset
+
+# Check the dimensions of both tables: rows x columns
+```{r}
+dim(counts)
+dim(metadata)
+```
+## 282 columns: 1 for 'gene_id'
+## so number of columns in 'counts' match number of rows in 'metadata'
+## but do they have the same order? - check via 'identical()'
+##57 905 genen; 281 samples; 11 features (GSM, title, description, brain_region, diagnosis, age, sex, ethnicity, PMI, brain_pH, donor_id, complete_cov, lib_size) - what is each variable type?
+
+# What is each variable type?
+```{r}
+str(metadata)
+str(counts)
+```
+
+
+
+# Compare sample IDs, excluding the gene identifier column
+```{r}
+count_ids <- names(counts)[names(counts) != "gene_id"]
+metadata_ids <- metadata$description
+```
+## names(counts) gives the column names (without gene_id)
+## The 'description' column in 'metadata' gives the sample names
+
+```{r}
+identical(count_ids, metadata_ids)
+```
+## checks whether two vectors of sample names are exactly the same.
+
+
+# Count samples per diagnosis and brain region
+```{r}
+table(metadata$diagnosis, metadata$brain_region)
+```
+
+
+# Count distinct donors and samples
+## 1) unique() keeps each donor only  once (number of donors)
+## 2) A donor can have multiple samples (number of samples)
+```{r}
+length(unique(metadata$donor_id))
+length(metadata$donor_id)
+```
+#descriptive statistics for each variable
+## idk of dit moet, maar staat in de ppt
+```{r}
+summary(metadata)
+```
+
+
+
+STEP 3: identify and handle missing values or outliers
+MISSING VALUES:
+
+# Count missing values in each metadata column
+```{r}
+colSums(is.na(metadata))
+```
+
+
+
+# which samples have no value for 'brain_pH'?
+
+```{r}
+metadata[is.na(metadata$brain_pH), ]
+```
+## donor_id '4463' 
+## the 3 missing values all come from the same donor. 
+## why? - zie docu
+## remove these NAs (remove donor)
+
+
+# remove the 3 samples with a missing value in 'brain_pH'
+```{r}
+keep_ids <- metadata$description[!is.na(metadata$brain_pH)]
+
+metadata <- metadata[metadata$description %in% keep_ids, ]
+counts   <- counts[, c(intersect("gene_id", names(counts)), keep_ids)]
+
+identical(setdiff(names(counts), "gene_id"), metadata$description)  # must be TRUE
+```
+## setdiff(a,b) returns elements that are in a but nog in b. (dus mag er mss uit)
+
+```{r}
+length(names(counts[-1]))   # number of samples in counts
+nrow(metadata)              # number of samples in metadata
+```
+#idk dit was eerst 'true' nu 'false' HBK
+```{r}
+identical(colnames(counts), metadata$description)
+```
+
+OUTLIERS:
+# (check the raw RNA-seq counts per sample. We look at how many counts each sample has in total and for how many genes there is at least one count.)
+
+# Keep only the sample columns
+## 'keep_ids' was eerst 'count_id', bij keep_ids zijn de 3 NAs er uit.
+## Build the count matrix, where only the sample columns are kept. The gene IDs become row names.
+## Now we have a clean table with numbers only.
+```{r}
+count_matrix <- as.matrix(counts[, keep_ids])
+rownames(count_matrix) <- counts$gene_id
+```
+
+
+# Check for missing, negative or non-integer counts
+## stopifnot() stops the script with an error if any condition is not true. If everything is fine, nothing happens and you see no output.
+## is dit nie hetzelfde als wat eerder staat? dus mss eentje weghalen.
+```{r}
+stopifnot(
+  is.numeric(count_matrix), #everything is a number (no text)
+  all(is.finite(count_matrix)), #there is no NA, NaN or Inf (missing values)
+  all(count_matrix >= 0), #there are no negative values
+  all(count_matrix == floor(count_matrix)) #everything is a whole number (floor() rounds down; if the rounded value equals the original, it was already a whole number)
+)
+```
+
+
+# Calculate two quality-control measures per sample
+```{r}
+#makes a copy of your metadata, so the original is not changed.
+qc <- metadata 
+
+#colSums(count_matrix) adds up all counts per column (= per sample). This is the total sequencing depth of that sample.
+qc$total_counts <- colSums(count_matrix) 
+
+#count_matrix > 0 gives TRUE (the gene has at least one read) or FALSE for each cell. colSums() of those TRUE/FALSE values counts the TRUEs (R treats TRUE as 1). This gives the number of detected genes per sample.
+qc$detected_genes <- colSums(count_matrix > 0) 
+
+#You attach both results to qc as new columns.
+
+
+#this shows quickly how the samples are distributed. Look mainly at Min. and Median. If the minimum is far below the median, one sample has strikingly few reads: a possible outlier.
+summary(qc$total_counts)
+summary(qc$detected_genes)
+```
+
+
+
+# Show the five samples with the lowest total counts
+##this shows right away which samples are suspicious, and which brain region and diagnosis group they come from. If such a sample also has few detected_genes, it is likely a real quality problem and not chance.
+```{r}
+#order(qc$total_counts) gives the row numbers sorted from low to high total counts.
+#qc[order(...), ] puts the rows of qc in that order. The result is stored in qc_lowest.
+qc_lowest <- qc[order(qc$total_counts), ]
+
+#qc_lowest[1:5, c(...)] shows the first five rows (so the lowest) and only the five named columns.
+qc_lowest[1:5, c("description", "brain_region", "diagnosis",
+                 "total_counts", "detected_genes")]
+```
+
+
+#Now create your first high-quality graph. This will allow you to see at a glance which samples have a strikingly low number of counts and whether the distribution varies across different regions of the brain.
+```{r}
+library(ggplot2)
+
+ggplot(qc, aes(x = brain_region, y = total_counts / 1e6)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(aes(colour = diagnosis),
+              width = 0.15, height = 0, alpha = 0.7) +
+  labs(
+    x = "Brain region",
+    y = "Total gene counts per sample (millions)",
+    colour = "Diagnosis"
+  ) +
+  theme_classic()
+```
+
+```{r}
+?ave()
+```
+
+
+```{r}
+# Rank samples from lowest to highest total counts within each brain region
+# ave() ave(values, group, FUN = ...) applies a function within each group and returns a vector of the same length as the data.
+# ties.method = "first": ensures that, even where values are the same, each one is still assigned a unique rank.
+qc$rank_in_region <- ave(qc$total_counts, qc$brain_region,
+                         FUN = function(x) rank(x, ties.method = "first"))
+
+# Label the two lowest samples in each region
+# ifelse(condition, if_true, if_false): if the rank is 2 or lower, the label becomes the sample name (SL...), otherwise an empty string.
+qc$plot_label <- ifelse(qc$rank_in_region <= 2, qc$description, "")
+
+jitter_position <- position_jitter(width = 0.15, height = 0, seed = 42)
+
+ggplot(qc, aes(x = brain_region, y = total_counts / 1e6)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(aes(colour = diagnosis), position = jitter_position) +
+  geom_text(aes(label = plot_label), position = jitter_position,
+            vjust = -0.7, size = 3) +
+  labs(x = "Brain region",
+       y = "Total gene counts per sample (millions)",
+       colour = "Diagnosis") +
+  theme_classic()
+```
+
+  
+#For the six labelled samples, you can see their ID, region, total number of counts and number of detected genes.
+```{r}
+qc[qc$rank_in_region <= 2,
+   c("description", "brain_region", "total_counts", "detected_genes")]
+```
+
+
+# Compare the ‘detected_genes’ for those samples with the median for their own brain region
+## This allows you to compare the number of detected genes in each low-abundance sample with the median for its own region.
+```{r}
+tapply(qc$detected_genes, qc$brain_region, median)
+
+```
+## conclusion (outliers): five of the six lowest samples are low on both measures, but none is extreme.
+## No sample is removed at this stage. Low depth is handled by DESeq2’s normalization, and the instructions say one low total is not enough to remove a sample. Note these codes and look at them again in the PCA:SL5881, SL5882, SL5883, SL5886, SL5887, SL6346
+## If they cluster away from the rest on PC1 or PC2 (or cluster together), that supports excluding them or adding a batch term to the model.
+
+
+
+
+## Now we’re going to filter out genes with little or no expression. previously, you looked at the quality per sample (columns). Now you’ll look at how much measurable signal each gene has (rows).
+##Als eerste filter gebruiken we minstens 1 count per million (CPM) in minstens 20 stalen. CPM drukt de count van een gen uit per miljoen totale counts in dat staal. De grens van 20 is een werkkeuze voor jullie dataset van 281 stalen. Ze vraagt dat een gen in meerdere stalen meetbaar is en gebruikt geen informatie over diagnose of hersenregio.
+
+```{r}
+# Calculate CPM using the total gene counts in each sample
+sample_totals <- colSums(count_matrix) #telt per sample (kolom) alle counts
+stopifnot(all(sample_totals > 0)) #is een veiligheidscheck. Een sample met totaal 0 zou in de volgende regel tot delen door nul leiden. Als alles klopt, gebeurt er niets.
+
+cpm_matrix <- sweep(count_matrix, 2, sample_totals, "/") * 1e6 #sweep() past een bewerking toe op elke rij of kolom van een matrix. 2 = werk per kolom. sample_totals is de waarde waarmee je per kolom bewerkt, en "/" is de bewerking (delen). Dus: elke count wordt gedeeld door het totaal van zijn eigen sample, en daarna keer 1.000.000 (1e6).
+
+
+
+# Keep genes with at least 1 CPM in at least 20 samples
+keep_gene <- rowSums(cpm_matrix >= 1) >= 20
+filtered_counts <- count_matrix[keep_gene, , drop = FALSE]
+
+# Summarise the effect of filtering
+c(
+  genes_before = nrow(count_matrix),
+  genes_all_zero = sum(rowSums(count_matrix) == 0),
+  genes_removed = sum(!keep_gene),
+  genes_after = nrow(filtered_counts),
+  samples_after = ncol(filtered_counts)
+)
+
+```
+## expect to see 57,905 genes before filtering and 278 samples after filtering.
+## genes_all_zero` is already included in `genes_removed`. Be sure to note down how many genes remain and which filter rule you used.
+## genes_after = 18 794
+## `filtered_counts` contains the raw counts for the retained genes. The CPM values are used here to determine which genes pass through the filter. You can then use `filtered_counts` to apply the TMM normalisation covered in the tutorial.
+
+
+
+
+# install edger
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+BiocManager::install("edgeR")
+```
+
+
+```{r}
+library(edgeR)
+
+# Calculate a TMM normalisation factor for each sample
+dge <- DGEList(counts = filtered_counts)
+dge <- normLibSizes(dge, method = "TMM")
+
+# Calculate normalised log2 counts per million for visualisation
+log_cpm <- cpm(dge, log = TRUE, prior.count = 2)
+
+# Check the normalisation factors and matrix dimensions
+summary(dge$samples$norm.factors) #summary of the TMM factors. These typically vary around 1. A factor above or below 1 is a correction for the composition of the sample.
+dim(log_cpm) # shows the number of retained genes × 281 samples.
+```
+##Mediaan ≈ 1.01 → goed, de meeste stalen hebben weinig correctie nodig.
+##Min = 0.5854 → minstens één staal krijgt een factor kleiner dan 1.
+##Max = 1.2687 → minstens één staal krijgt een factor groter dan 1.
+##Een factor:
+< 1 betekent dat het staal relatief veel counts had voor de meeste genen en daarom naar beneden wordt gecorrigeerd.
+> 1 betekent dat het staal relatief weinig counts had voor de meeste genen en daarom naar boven wordt gecorrigeerd.
+##Dat de factoren tussen ongeveer 0.59 en 1.27 liggen is niet ongewoon en wijst niet op een probleem.
+
+
+
+#PCA
+##ik snap dit nog niet goed
+```{r}
+library(ggplot2)
+
+# Check that expression columns and metadata rows have the same sample order
+stopifnot(identical(colnames(log_cpm), qc$description))
+
+# Transpose the matrix so that each row is one sample
+pca <- prcomp(t(log_cpm))
+
+# Calculate the percentage of variation explained by each component
+variance_pct <- 100 * pca$sdev^2 / sum(pca$sdev^2)
+
+pca_data <- qc
+pca_data$PC1 <- pca$x[, "PC1"]
+pca_data$PC2 <- pca$x[, "PC2"]
+
+ggplot(pca_data, aes(x = PC1, y = PC2)) +
+  geom_point(aes(colour = brain_region, shape = diagnosis),
+             size = 2.5, alpha = 0.8) +
+  geom_text(data = subset(pca_data, rank_in_region <= 2),
+            aes(label = description), vjust = -0.7, size = 3) +
+  labs(
+    x = sprintf("PC1 (%.1f%%)", variance_pct[1]),
+    y = sprintf("PC2 (%.1f%%)", variance_pct[2]),
+    colour = "Brain region",
+    shape = "Diagnosis"
+  ) +
+  theme_classic()
+```
+
+
+
+
+##Now take a look at why some samples have low values on PC2. The six labels on your PCA plot marked the samples with the lowest total counts. We will now select the points at the very bottom of the PCA plot based on their PC2 score, so that you can identify which samples they are and see if their metadata stands out.
+
+
+#Find the samples with the lowest PC2 scores
+```{r}
+
+# Show the six samples with the lowest PC2 scores
+pc2_lowest <- pca_data[order(pca_data$PC2), ]
+
+pc2_lowest[1:6, c("description", "brain_region", "diagnosis",
+                  "PC2", "brain_pH", "PMI", "total_counts",
+                  "detected_genes")]
+```
+#Plot PC2 against brain pH
+```{r}
+# Show the relationship between brain pH and PC2 within each region
+pca_ph <- subset(pca_data, !is.na(brain_pH))
+
+ggplot(pca_ph, aes(x = brain_pH, y = PC2, colour = diagnosis)) +
+  geom_point(size = 2, alpha = 0.75) +
+  facet_wrap(~ brain_region) +
+  labs(x = "Brain pH", y = "PC2 score", colour = "Diagnosis") +
+  theme_classic()
+```
+## Je kunt dezelfde figuur maken voor PMI of totale counts door x = brain_pH te vervangen door x = PMI of x = total_counts / 1e6 en het aslabel aan te passen. Gebruik die plots om te beoordelen of de stalen onderaan de PCA ook op andere kwaliteitsmaten afwijken.
+  
+#Now check whether the same samples at the bottom of PC2 also have a notable post-mortem interval (PMI) or total count. We’ll keep PC2 on the y-axis so that you can compare the figure directly with your pH plot.
+```{r}
+# Label the six samples with the lowest PC2 scores
+lowest_ids <- head(pc2_lowest$description, 6)
+pc2_labels <- pca_data[pca_data$description %in% lowest_ids, ]
+
+# Compare PC2 with post-mortem interval
+ggplot(pca_data, aes(x = PMI, y = PC2, colour = diagnosis)) +
+  geom_point(alpha = 0.75) +
+  geom_text(data = pc2_labels, aes(label = description),
+            hjust = 0.5, vjust = -0.7, size = 3, show.legend = FALSE) +
+  facet_wrap(~ brain_region) +
+  labs(x = "Post-mortem interval (hours)", y = "PC2 score",
+       colour = "Diagnosis") +
+  theme_classic()
+
+# Compare PC2 with total gene counts per sample
+ggplot(pca_data, aes(x = total_counts / 1e6, y = PC2, colour = diagnosis)) +
+  geom_point(alpha = 0.75) +
+  geom_text(data = pc2_labels, aes(label = description),
+            hjust = 0.5, vjust = -0.7, size = 3, show.legend = FALSE) +
+  facet_wrap(~ brain_region) +
+  labs(x = "Total gene counts per sample (millions)", y = "PC2 score",
+       colour = "Diagnosis") +
+  theme_classic()
+```
+
+  
